@@ -1,7 +1,7 @@
 # Dept 56 (Morbihan) — Lidar_Loop pipeline run
 
 End-to-end PV-panel database for département 56 (Morbihan, Bretagne), produced
-by [Lidar_Loop](../../Lidar_Loop). This folder holds every input and output of
+by [Lidar_Loop](../../Lidar_Loop). This folder holds every output of
 that run, plus the viewer for inspecting the result.
 
 ## TL;DR
