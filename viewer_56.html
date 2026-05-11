@@ -773,7 +773,53 @@
             ['lidar-tiles-fill', 'lidar-tiles-line'].forEach(id => setVis(id, e.target.checked));
         });
 
+        // --- Auto-load from same directory (works under http://, not under file://) ---
+        // Default filenames produced by the pipeline for dept 56. Edit if you ship
+        // this viewer to a different dept; the drop zone is still available as
+        // fallback when the browser blocks cross-file fetches.
+        const AUTO_LOAD = [
+            'panels_assigned__56.geojson',
+            'panels__56.csv',
+            'admin_56.geojson',
+            'lidar_tiles_56.geojson',
+        ];
+
+        async function tryAutoLoad() {
+            const here = new URL('.', location.href);
+            const overlay = document.getElementById('loading-overlay');
+            const loading = document.getElementById('loading-text');
+            overlay.classList.remove('hidden');
+            loading.textContent = 'Looking for files alongside this page...';
+            const fetched = [];
+            for (const name of AUTO_LOAD) {
+                try {
+                    const r = await fetch(new URL(name, here), { cache: 'no-cache' });
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    const blob = await r.blob();
+                    fetched.push(new File([blob], name, { type: blob.type || 'application/json' }));
+                    loading.textContent = `Auto-loaded ${name}...`;
+                } catch (e) {
+                    console.info(`auto-load: skipped ${name} (${e.message}). Under file:// browsers block this for security; use http or drag the files in.`);
+                    overlay.classList.add('hidden');
+                    return false;
+                }
+            }
+            overlay.classList.add('hidden');
+            await handleFiles(fetched);
+            return true;
+        }
+
+        // Wait for the map to be ready, then attempt auto-load
+        function waitForMap() {
+            if (map && map.isStyleLoaded && map.isStyleLoaded() && map.getSource('panels')) {
+                tryAutoLoad();
+            } else {
+                setTimeout(waitForMap, 100);
+            }
+        }
+
         initMap();
+        waitForMap();
     </script>
 </body>
 </html>
