@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dept 56 — PV panels + admin boundaries</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/proj4@2.9.2/dist/proj4.min.js"></script>
+    <link href="https://unpkg.com/maplibre-gl@4.1.0/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/maplibre-gl@4.1.0/dist/maplibre-gl.js"></script>
+    <style>
+        body { margin: 0; padding: 0; font-family: 'Inter', system-ui, sans-serif; }
+        #map { position: absolute; top: 0; bottom: 0; width: 100%; height: 100%; }
+        .panel { background: rgba(15, 23, 42, 0.92); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.15); }
+        .stat-box { background: rgba(30, 41, 59, 0.8); border: 1px solid rgba(51, 65, 85, 0.5); padding: 8px; border-radius: 6px; }
+        .stat-label { color: #94a3b8; font-size: 11px; margin-bottom: 2px; }
+        .stat-value { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+        #drop-zone.dragover { background-color: rgba(6, 182, 212, 0.15); border-color: #06b6d4; }
+        .legend-item { display: flex; align-items: center; gap: 8px; }
+        .legend-color { width: 16px; height: 16px; border-radius: 3px; }
+        #loading-overlay { position: absolute; inset: 0; background: rgba(15, 23, 42, 0.9); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 100; }
+        #loading-overlay:not(.hidden) { display: flex; }
+        .spinner { width: 40px; height: 40px; border: 3px solid rgba(6, 182, 212, 0.3); border-top-color: #06b6d4; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 16px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        input[type="range"] { -webkit-appearance: none; height: 6px; border-radius: 3px; background: #334155; outline: none; }
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #06b6d4; cursor: pointer; }
+        .file-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 9999px; font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+        .file-pill.ok { background: rgba(34,197,94,0.15); color: #4ade80; }
+        .file-pill.miss { background: rgba(148,163,184,0.10); color: #94a3b8; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+
+    <div id="loading-overlay" class="hidden">
+        <div class="spinner"></div>
+        <div id="loading-text" class="text-white text-sm">Ready</div>
+    </div>
+
+    <!-- Controls panel -->
+    <div id="controls-panel" class="panel absolute top-4 left-4 rounded-xl shadow-2xl p-4 w-80 text-white z-10 hidden">
+        <div class="flex items-center justify-between border-b border-slate-700 pb-3 mb-3">
+            <div class="flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#06b6d4" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg>
+                <h1 class="text-sm font-bold text-slate-100">Dept 56 — PV viewer</h1>
+            </div>
+            <div id="dept-pill" class="text-xs text-cyan-300 font-mono bg-cyan-400/10 px-2 py-1 rounded">--</div>
+        </div>
+        <div class="grid grid-cols-2 gap-2 text-xs mb-3">
+            <div class="stat-box"><div class="stat-label">Panels</div><div id="stat-panels" class="stat-value text-cyan-300 font-bold">0</div></div>
+            <div class="stat-box"><div class="stat-label">Buildings</div><div id="stat-buildings" class="stat-value text-slate-200 font-bold">0</div></div>
+            <div class="stat-box"><div class="stat-label">Surface</div><div id="stat-surface" class="stat-value text-cyan-300 font-bold">0 m²</div></div>
+            <div class="stat-box">
+                <div class="stat-label">Communes / w-LiDAR</div>
+                <div class="stat-value font-bold"><span id="stat-communes" class="text-amber-300">0</span> / <span id="stat-communes-covered" class="text-emerald-400">0</span></div>
+            </div>
+        </div>
+        <div class="text-xs text-slate-400 mb-2 border-t border-slate-700 pt-2">
+            <div class="font-semibold mb-2 text-slate-300">Layers</div>
+            <div class="legend-item mb-1"><div class="legend-color" style="background: #06b6d4; opacity: 0.85;"></div><span>PV panel (azimuth-shaded)</span></div>
+            <div class="legend-item mb-1"><div class="legend-color" style="background: transparent; border: 1.5px solid #22c55e;"></div><span>Commune with LiDAR coverage</span></div>
+            <div class="legend-item mb-1"><div class="legend-color" style="background: transparent; border: 1.5px solid #fde047;"></div><span>Commune without LiDAR</span></div>
+            <div class="legend-item mb-1"><div class="legend-color" style="background: rgba(34,197,94,0.30);"></div><span>LiDAR-HD tile used (PV+)</span></div>
+            <div class="legend-item mb-1"><div class="legend-color" style="background: rgba(96,165,250,0.18);"></div><span>LiDAR-HD tile available</span></div>
+            <div class="legend-item mb-1"><div class="legend-color" style="background: transparent; border: 2.5px solid #ef4444;"></div><span>Department boundary</span></div>
+            <div class="legend-item"><div class="legend-color" style="background: transparent; border: 2px solid #f59e0b;"></div><span>Selected panel</span></div>
+            <label class="flex items-center gap-2 mt-2 cursor-pointer select-none">
+                <input type="checkbox" id="panels-toggle" checked class="accent-cyan-400">
+                <span class="text-slate-300">Show panels</span>
+            </label>
+            <label class="flex items-center gap-2 mt-1 cursor-pointer select-none">
+                <input type="checkbox" id="communes-toggle" checked class="accent-amber-400">
+                <span class="text-slate-300">Show commune boundaries</span>
+            </label>
+            <label class="flex items-center gap-2 mt-1 cursor-pointer select-none">
+                <input type="checkbox" id="dept-toggle" checked class="accent-red-400">
+                <span class="text-slate-300">Show department boundary</span>
+            </label>
+            <label class="flex items-center gap-2 mt-1 cursor-pointer select-none">
+                <input type="checkbox" id="tiles-toggle" checked class="accent-emerald-400">
+                <span class="text-slate-300">Show LiDAR-HD tiles</span>
+            </label>
+        </div>
+        <div class="text-xs text-slate-400 mb-2 border-t border-slate-700 pt-2">
+            <div class="font-semibold mb-2 text-slate-300">Files loaded</div>
+            <div class="flex flex-wrap gap-2">
+                <span id="pill-panels" class="file-pill miss">panels —</span>
+                <span id="pill-csv"    class="file-pill miss">CSV —</span>
+                <span id="pill-admin"  class="file-pill miss">admin —</span>
+                <span id="pill-tiles"  class="file-pill miss">tiles —</span>
+            </div>
+        </div>
+        <div class="mt-3 border-t border-slate-700 pt-3">
+            <label class="text-xs text-slate-400 mb-1 block">Basemap (IGN ortho)</label>
+            <select id="basemap-select" class="w-full bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded px-2 py-1">
+                <option value="ORTHOIMAGERY.ORTHOPHOTOS">Most-recent composite (default)</option>
+                <option value="ORTHOIMAGERY.ORTHOPHOTOS.ORTHO-EXPRESS.2025">Express 2025</option>
+                <option value="ORTHOIMAGERY.ORTHOPHOTOS.ORTHO-EXPRESS.2024">Express 2024</option>
+                <option value="ORTHOIMAGERY.ORTHOPHOTOS2024" selected>Annual 2024</option>
+                <option value="ORTHOIMAGERY.ORTHOPHOTOS2023">Annual 2023</option>
+                <option value="ORTHOIMAGERY.ORTHOPHOTOS2022">Annual 2022</option>
+                <option value="ORTHOIMAGERY.ORTHOPHOTOS2021-2023">Composite 2021–2023</option>
+            </select>
+        </div>
+        <div class="mt-3 border-t border-slate-700 pt-3">
+            <label class="text-xs text-slate-400 mb-1 flex justify-between">
+                <span>Panel opacity</span>
+                <span id="opacity-val" class="text-cyan-300">85%</span>
+            </label>
+            <input type="range" id="opacity-slider" min="0" max="1" step="0.05" value="0.85" class="w-full">
+        </div>
+        <div class="flex gap-2 mt-3">
+            <button id="btn-fit" class="flex-1 bg-slate-700 hover:bg-slate-600 text-xs py-2 px-3 rounded text-slate-200 transition-colors">Fit to data</button>
+            <button id="btn-clear" class="flex-1 bg-red-600/80 hover:bg-red-600 text-xs py-2 px-3 rounded text-white transition-colors">Clear</button>
+        </div>
+    </div>
+
+    <!-- Panel details card -->
+    <div id="panel-details" class="panel absolute bottom-4 left-4 rounded-xl shadow-2xl p-4 w-96 text-white z-10 hidden">
+        <div class="flex items-center justify-between border-b border-slate-700 pb-3 mb-3">
+            <div class="flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#06b6d4" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg>
+                <h2 class="text-sm font-bold text-slate-100">Panel Characteristics</h2>
+            </div>
+            <button id="btn-close-panel" class="text-slate-400 hover:text-white text-lg leading-none">&times;</button>
+        </div>
+        <div class="grid grid-cols-2 gap-2 text-xs">
+            <div class="stat-box col-span-2"><div class="stat-label">Panel ID</div><div id="pd-id" class="stat-value text-slate-200 truncate" title="">--</div></div>
+            <div class="stat-box"><div class="stat-label">Inclined surface</div><div id="pd-surface" class="stat-value text-cyan-300">--</div></div>
+            <div class="stat-box"><div class="stat-label">2D mask area</div><div id="pd-area2d" class="stat-value text-slate-200">--</div></div>
+            <div class="stat-box"><div class="stat-label">Tilt</div><div id="pd-tilt" class="stat-value text-amber-400">--</div></div>
+            <div class="stat-box"><div class="stat-label">Azimuth</div><div id="pd-az" class="stat-value text-blue-400">--</div></div>
+            <div class="stat-box"><div class="stat-label">Confidence</div><div id="pd-conf" class="stat-value text-emerald-400">--</div></div>
+            <div class="stat-box"><div class="stat-label">Region match</div><div id="pd-match" class="stat-value text-slate-300">--</div></div>
+            <div class="stat-box col-span-2"><div class="stat-label">Building ID</div><div id="pd-building" class="stat-value text-slate-300 truncate" title="">--</div></div>
+            <div class="stat-box col-span-2"><div class="stat-label">Region / source tile</div><div id="pd-region" class="stat-value text-slate-300 truncate" title="">--</div></div>
+            <div class="stat-box col-span-2"><div class="stat-label">Source image</div><div id="pd-source" class="stat-value text-slate-300 truncate" title="">--</div></div>
+            <div class="stat-box"><div class="stat-label">Lon</div><div id="pd-lon" class="stat-value text-slate-300">--</div></div>
+            <div class="stat-box"><div class="stat-label">Lat</div><div id="pd-lat" class="stat-value text-slate-300">--</div></div>
+        </div>
+    </div>
+
+    <!-- Commune popup card -->
+    <div id="commune-card" class="panel absolute top-4 right-4 rounded-xl shadow-2xl p-3 w-64 text-white z-10 hidden">
+        <div class="flex items-center justify-between border-b border-slate-700 pb-2 mb-2">
+            <div class="text-xs font-semibold text-amber-300">Commune</div>
+            <button id="btn-close-commune" class="text-slate-400 hover:text-white text-lg leading-none">&times;</button>
+        </div>
+        <div class="text-sm text-slate-100" id="commune-name">--</div>
+        <div class="text-xs text-slate-400 font-mono" id="commune-code">--</div>
+        <div class="text-xs text-cyan-300 mt-2" id="commune-panels">-- panels</div>
+    </div>
+
+    <!-- Drop zone -->
+    <div id="drop-zone" class="absolute inset-0 flex items-center justify-center bg-slate-900/95 z-50 transition-colors duration-300">
+        <div class="panel p-10 rounded-2xl shadow-2xl flex flex-col items-center max-w-lg w-full text-center border-dashed border-2 border-slate-600 hover:border-cyan-500 transition-colors cursor-pointer">
+            <div class="w-16 h-16 bg-slate-800 rounded-full flex items-center justify-center mb-6">
+                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#06b6d4" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            </div>
+            <h2 class="text-xl font-bold text-white mb-2">Drop your four files</h2>
+            <p class="text-slate-400 text-sm mb-2">
+                <code class="text-slate-200">panels_assigned__56.geojson</code> +
+                <code class="text-slate-200">panels__56.csv</code> +
+                <code class="text-slate-200">admin_56.geojson</code> +
+                <code class="text-slate-200">lidar_tiles_56.geojson</code>
+            </p>
+            <p class="text-slate-500 text-xs mb-5">All four sit in the same folder as this HTML. File type is auto-detected (panels, admin, tiles, or CSV).</p>
+            <div class="flex flex-wrap gap-2 mb-5 text-xs justify-center">
+                <span id="dz-pill-panels" class="file-pill miss">panels —</span>
+                <span id="dz-pill-csv"    class="file-pill miss">CSV —</span>
+                <span id="dz-pill-admin"  class="file-pill miss">admin —</span>
+                <span id="dz-pill-tiles"  class="file-pill miss">tiles —</span>
+            </div>
+            <input type="file" id="file-input" class="hidden" multiple accept=".geojson,.json,.csv">
+            <button onclick="document.getElementById('file-input').click()" class="bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-2 px-6 rounded-lg shadow transition-colors">Browse files</button>
+        </div>
+    </div>
+
+    <script>
+        // --- Projection ---
+        proj4.defs('EPSG:2154', '+proj=lcc +lat_1=49 +lat_2=44 +lat_0=46.5 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs');
+        function lambert93ToWGS84(x, y) { return proj4('EPSG:2154', 'EPSG:4326', [x, y]); }
+
+        const MAX_PER_FILE_MB = 50;
+
+        // --- State ---
+        let map = null;
+        let panelGeoms = [];          // [{ panel_id, geometry (WGS-84) }]
+        let panelProps = {};          // { panel_id: csv row }
+        let adminFC = null;           // raw admin FeatureCollection (WGS-84)
+        let dept = null;              // single dept feature
+        let commune = [];             // commune features
+        let lidarTiles = [];          // LiDAR-HD tile features (1 km × 1 km, used + available)
+        let files = { panels: null, csv: null, admin: null, tiles: null };
+        let isProcessing = false;
+
+        // --- CSV parser ---
+        function parseCsvLine(line) {
+            const out = []; let cur = ''; let inQ = false;
+            for (let i = 0; i < line.length; i++) {
+                const c = line[i];
+                if (c === '"') { if (inQ && line[i + 1] === '"') { cur += '"'; i++; } else { inQ = !inQ; } }
+                else if (c === ',' && !inQ) { out.push(cur); cur = ''; }
+                else { cur += c; }
+            }
+            out.push(cur);
+            return out;
+        }
+        function parseCsv(text) {
+            const lines = text.split(/\r?\n/);
+            let h = 0;
+            while (h < lines.length && lines[h].trim() === '') h++;
+            if (h >= lines.length) return { headers: [], rows: [] };
+            const headers = parseCsvLine(lines[h]);
+            const rows = [];
+            for (let i = h + 1; i < lines.length; i++) {
+                if (lines[i].trim() === '') continue;
+                const fields = parseCsvLine(lines[i]);
+                const row = {};
+                for (let j = 0; j < headers.length; j++) row[headers[j]] = fields[j] ?? '';
+                rows.push(row);
+            }
+            return { headers, rows };
+        }
+
+        // --- Geometry helpers ---
+        function reprojectRing(ring, reproj) { return ring.map(([x, y]) => reproj(x, y)); }
+        function reprojectGeom(g, reproj) {
+            if (!g) return null;
+            if (g.type === 'Polygon') return { type: 'Polygon', coordinates: g.coordinates.map(r => reprojectRing(r, reproj)) };
+            if (g.type === 'MultiPolygon') return { type: 'MultiPolygon', coordinates: g.coordinates.map(p => p.map(r => reprojectRing(r, reproj))) };
+            return null;
+        }
+        function flattenFirstCoord(c) {
+            if (!Array.isArray(c)) return null;
+            if (typeof c[0] === 'number') return c;
+            return flattenFirstCoord(c[0]);
+        }
+        function detectLambert(fc) {
+            const epsg = (fc.crs?.properties?.name || '').toString();
+            if (epsg.includes('2154')) return true;
+            for (const f of fc.features || []) {
+                if (!f.geometry?.coordinates) continue;
+                const c = flattenFirstCoord(f.geometry.coordinates);
+                if (c) return Math.abs(c[0]) > 200;
+            }
+            return false;
+        }
+        function forEachLonLat(coords, fn) {
+            if (!Array.isArray(coords)) return;
+            if (typeof coords[0] === 'number') { fn(coords[0], coords[1]); return; }
+            for (const c of coords) forEachLonLat(c, fn);
+        }
+        function bboxOfGeom(geom) {
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            forEachLonLat(geom?.coordinates, (x, y) => {
+                if (x < minX) minX = x; if (x > maxX) maxX = x;
+                if (y < minY) minY = y; if (y > maxY) maxY = y;
+            });
+            return [minX, minY, maxX, maxY];
+        }
+        function pointInRing(lon, lat, ring) {
+            let inside = false;
+            for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+                const xi = ring[i][0], yi = ring[i][1];
+                const xj = ring[j][0], yj = ring[j][1];
+                if ((yi > lat) !== (yj > lat)
+                    && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) inside = !inside;
+            }
+            return inside;
+        }
+        function pointInPolygon(lon, lat, geom) {
+            if (!geom) return false;
+            const polys = geom.type === 'Polygon' ? [geom.coordinates]
+                       : geom.type === 'MultiPolygon' ? geom.coordinates : null;
+            if (!polys) return false;
+            for (const poly of polys) {
+                if (!pointInRing(lon, lat, poly[0])) continue;
+                let hole = false;
+                for (let k = 1; k < poly.length; k++) {
+                    if (pointInRing(lon, lat, poly[k])) { hole = true; break; }
+                }
+                if (!hole) return true;
+            }
+            return false;
+        }
+
+        // --- Color + formatters ---
+        function colorForAzimuth(az) {
+            if (az === null || az === undefined || az === '' || Number.isNaN(az)) return '#94a3b8';
+            const a = Number(az);
+            if (!Number.isFinite(a)) return '#94a3b8';
+            return `hsl(${((a % 360) + 360) % 360}, 80%, 55%)`;
+        }
+        function formatSurface(m2) {
+            if (!Number.isFinite(m2) || m2 <= 0) return '0 m²';
+            if (m2 >= 1e6) return (m2 / 1e6).toFixed(2) + ' km²';
+            if (m2 >= 10000) return (m2 / 10000).toFixed(1) + ' ha';
+            if (m2 >= 1000) return (m2 / 1000).toFixed(2) + ' k m²';
+            return Math.round(m2).toLocaleString() + ' m²';
+        }
+        function num(v, d = 1, suf = '') {
+            if (v == null || v === '') return '—';
+            const n = Number(v);
+            return Number.isFinite(n) ? n.toFixed(d) + suf : '—';
+        }
+
+        // --- Basemap ---
+        function ignWmtsUrl(layerId) {
+            return 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0'
+                 + '&LAYER=' + layerId
+                 + '&STYLE=normal&TILEMATRIXSET=PM'
+                 + '&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/jpeg';
+        }
+        let currentBasemap = 'ORTHOIMAGERY.ORTHOPHOTOS2024';
+        function setBasemap(layerId) {
+            if (!map) return;
+            currentBasemap = layerId;
+            if (map.getLayer('satellite')) map.removeLayer('satellite');
+            if (map.getSource('ign-ortho')) map.removeSource('ign-ortho');
+            map.addSource('ign-ortho', {
+                type: 'raster', tiles: [ignWmtsUrl(layerId)], tileSize: 256, maxzoom: 19,
+                attribution: 'IGN-F/Géoportail (' + layerId + ')'
+            });
+            const layers = map.getStyle().layers || [];
+            const firstNonBase = layers.find(l => l.id !== 'satellite')?.id;
+            map.addLayer({ id: 'satellite', type: 'raster', source: 'ign-ortho', minzoom: 0 }, firstNonBase);
+        }
+
+        // --- Map init ---
+        function initMap() {
+            map = new maplibregl.Map({
+                container: 'map',
+                style: {
+                    version: 8,
+                    sources: { 'ign-ortho': { type: 'raster', tiles: [ignWmtsUrl(currentBasemap)], tileSize: 256, maxzoom: 19, attribution: 'IGN-F/Géoportail' } },
+                    layers: [{ id: 'satellite', type: 'raster', source: 'ign-ortho', minzoom: 0 }]
+                },
+                center: [-2.78, 47.75], zoom: 8, minZoom: 4, maxZoom: 20
+            });
+            map.addControl(new maplibregl.NavigationControl(), 'top-right');
+            map.addControl(new maplibregl.ScaleControl(), 'bottom-right');
+
+            map.on('load', () => {
+                // LiDAR-HD tile coverage — drawn UNDER everything else so we can read
+                // the basemap through the tile fills. Two color states via case expr:
+                //   used == true  → translucent green (we processed this tile)
+                //   used == false → very faint blue (IGN has it but no PV+ buildings)
+                map.addSource('lidar-tiles', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+                map.addLayer({ id: 'lidar-tiles-fill', type: 'fill', source: 'lidar-tiles',
+                    paint: {
+                        'fill-color': ['case', ['get', 'used'], '#22c55e', '#60a5fa'],
+                        'fill-opacity': ['case', ['get', 'used'], 0.28, 0.18]
+                    }
+                });
+                map.addLayer({ id: 'lidar-tiles-line', type: 'line', source: 'lidar-tiles',
+                    paint: {
+                        'line-color': ['case', ['get', 'used'], '#16a34a', '#3b82f6'],
+                        'line-width': 0.5, 'line-opacity': 0.6
+                    }
+                });
+
+                // Commune fills (transparent, just for hover/click hit)
+                map.addSource('communes', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+                map.addLayer({ id: 'communes-fill', type: 'fill', source: 'communes',
+                    paint: { 'fill-color': '#fde047', 'fill-opacity': 0.0 }   // invisible by default but clickable
+                });
+                map.addLayer({ id: 'communes-line', type: 'line', source: 'communes',
+                    paint: {
+                        // green when the commune has ≥1 panel with LiDAR tilt+az, yellow otherwise
+                        'line-color': ['case', ['get', 'has_tilt'], '#22c55e', '#fde047'],
+                        'line-width': ['case', ['get', 'has_tilt'], 2.0, 1.2],
+                        'line-opacity': 0.95
+                    }
+                });
+
+                // Department boundary
+                map.addSource('dept', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+                map.addLayer({ id: 'dept-line', type: 'line', source: 'dept',
+                    paint: { 'line-color': '#ef4444', 'line-width': 2.6, 'line-opacity': 0.95 }
+                });
+
+                // Panels — on top
+                map.addSource('panels', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+                map.addLayer({ id: 'panels-fill', type: 'fill', source: 'panels',
+                    paint: { 'fill-color': ['get', '_color'], 'fill-opacity': 0.85 }
+                });
+                map.addLayer({ id: 'panels-line', type: 'line', source: 'panels',
+                    paint: { 'line-color': '#0e7490', 'line-width': 1, 'line-opacity': 0.95 }
+                });
+
+                // Selection highlight
+                map.addSource('panel-selected', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+                map.addLayer({ id: 'panel-selected-line', type: 'line', source: 'panel-selected',
+                    paint: { 'line-color': '#f59e0b', 'line-width': 3, 'line-opacity': 1 }
+                });
+
+                function onPanelClick(e) {
+                    if (!e.features || e.features.length === 0) return;
+                    e.originalEvent.stopPropagation();
+                    const f = e.features[0];
+                    showPanelDetails(f.properties);
+                    map.getSource('panel-selected').setData({
+                        type: 'FeatureCollection',
+                        features: [{ type: 'Feature', geometry: f.geometry, properties: f.properties }]
+                    });
+                }
+                map.on('click', 'panels-fill', onPanelClick);
+                map.on('click', 'panels-line', onPanelClick);
+
+                function onCommuneClick(e) {
+                    if (!e.features || e.features.length === 0) return;
+                    // If a panel was hit at the same point, prefer the panel
+                    const here = map.queryRenderedFeatures(e.point, { layers: ['panels-fill', 'panels-line'] });
+                    if (here.length > 0) return;
+                    e.originalEvent.stopPropagation();
+                    showCommuneCard(e.features[0].properties);
+                }
+                map.on('click', 'communes-fill', onCommuneClick);
+                map.on('click', 'communes-line', onCommuneClick);
+
+                map.on('click', (e) => {
+                    const hits = map.queryRenderedFeatures(e.point, {
+                        layers: ['panels-fill', 'panels-line', 'communes-fill', 'communes-line']
+                    });
+                    if (hits.length === 0) {
+                        document.getElementById('panel-details').classList.add('hidden');
+                        document.getElementById('commune-card').classList.add('hidden');
+                        map.getSource('panel-selected').setData({ type: 'FeatureCollection', features: [] });
+                    }
+                });
+                for (const id of ['panels-fill', 'panels-line', 'communes-line']) {
+                    map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer'; });
+                    map.on('mouseleave', id, () => { map.getCanvas().style.cursor = ''; });
+                }
+            });
+        }
+
+        function showPanelDetails(p) {
+            document.getElementById('pd-id').textContent = p.panel_id ?? '--';
+            document.getElementById('pd-id').title = p.panel_id ?? '';
+            document.getElementById('pd-surface').textContent = num(p.surface_m2, 1, ' m²');
+            document.getElementById('pd-area2d').textContent = num(p.panel_2d_area_m2, 1, ' m²');
+            document.getElementById('pd-tilt').textContent = num(p.tilt_degrees, 1, '°');
+            document.getElementById('pd-az').textContent = num(p.azimuth_degrees, 1, '°');
+            document.getElementById('pd-conf').textContent = num(p.confidence, 3);
+            const linkM = p.building_link_method || '—';
+            const matchM = p.region_match_method || '—';
+            document.getElementById('pd-match').textContent = `${matchM} (${linkM})`;
+            document.getElementById('pd-building').textContent = p.building_id || '—';
+            document.getElementById('pd-building').title = p.building_id || '';
+            const reg = p.region_id ? `${p.region_id} / tile ${p.source_tile || '?'}` : '—';
+            document.getElementById('pd-region').textContent = reg;
+            document.getElementById('pd-region').title = reg;
+            document.getElementById('pd-source').textContent = p.source_image || '—';
+            document.getElementById('pd-source').title = p.source_image || '';
+            document.getElementById('pd-lon').textContent = num(p.lon, 5);
+            document.getElementById('pd-lat').textContent = num(p.lat, 5);
+            document.getElementById('panel-details').classList.remove('hidden');
+        }
+
+        function showCommuneCard(props) {
+            document.getElementById('commune-name').textContent = props.nom || '—';
+            document.getElementById('commune-code').textContent = props.code || '';
+            const src = map.getSource('panels');
+            let count = 0;
+            if (src && src._data) {
+                for (const f of (src._data.features || [])) {
+                    if ((f.properties?.commune_insee || '') === props.code) count++;
+                }
+            }
+            const nTilted = Number(props.n_tilted ?? 0);
+            let txt;
+            if (count > 0) {
+                txt = `${count.toLocaleString()} panel(s) detected · ${nTilted.toLocaleString()} with LiDAR plane`;
+            } else if (nTilted > 0) {
+                txt = `${nTilted.toLocaleString()} tilted panel(s) inside`;
+            } else if (props.has_tilt) {
+                txt = `LiDAR coverage present`;
+            } else {
+                txt = `no LiDAR plane info (panel CSV may be unloaded)`;
+            }
+            document.getElementById('commune-panels').textContent = txt;
+            document.getElementById('commune-card').classList.remove('hidden');
+        }
+
+        // --- File ingestion ---
+        async function handleFiles(fileList) {
+            if (isProcessing || !fileList?.length) return;
+            isProcessing = true;
+            const overlay = document.getElementById('loading-overlay');
+            const loading = document.getElementById('loading-text');
+            overlay.classList.remove('hidden');
+            for (const f of fileList) {
+                if (f.size > MAX_PER_FILE_MB * 1024 * 1024) {
+                    alert(`${f.name} exceeds ${MAX_PER_FILE_MB} MB cap.`);
+                    overlay.classList.add('hidden'); isProcessing = false; return;
+                }
+            }
+            for (const f of fileList) {
+                const ext = (f.name.split('.').pop() || '').toLowerCase();
+                loading.textContent = `Reading ${f.name}...`;
+                if (ext === 'csv') {
+                    await readCsv(f);
+                    setPill('csv', f.name, files.csv.rows.length + ' rows');
+                } else if (ext === 'geojson' || ext === 'json') {
+                    const text = await f.text();
+                    const obj = JSON.parse(text);
+                    if (obj.type !== 'FeatureCollection' || !Array.isArray(obj.features)) {
+                        console.warn('Skipping non-FeatureCollection:', f.name);
+                        continue;
+                    }
+                    // Detection rules (first-match wins):
+                    //  - admin   : feature.properties.kind ∈ {departement, commune}
+                    //  - tiles   : feature.properties has tile_id + used (the LiDAR coverage geojson)
+                    //  - panels  : everything else (must carry panel_id)
+                    const first = obj.features[0]?.properties || {};
+                    const isAdmin = ['departement', 'commune'].includes(first.kind)
+                                 || obj.features.some(ft => ['departement', 'commune'].includes(ft.properties?.kind));
+                    const isTiles = ('tile_id' in first && 'used' in first)
+                                 || obj.features.some(ft => 'tile_id' in (ft.properties||{}) && 'used' in (ft.properties||{}));
+                    if (isAdmin) {
+                        ingestAdmin(obj);
+                        setPill('admin', f.name, `${commune.length} communes`);
+                    } else if (isTiles) {
+                        ingestTiles(obj);
+                        const n_used = lidarTiles.filter(t => t.properties.used).length;
+                        setPill('tiles', f.name, `${lidarTiles.length} tiles, ${n_used} used`);
+                    } else {
+                        ingestPanels(obj);
+                        setPill('panels', f.name, files.panels.length + ' geoms');
+                    }
+                } else {
+                    console.warn('Skipping unsupported file:', f.name);
+                }
+            }
+            renderAll();
+            overlay.classList.add('hidden');
+            isProcessing = false;
+        }
+
+        async function readCsv(file) {
+            const text = await file.text();
+            const { headers, rows } = parseCsv(text);
+            const props = {};
+            const numCols = ['lon','lat','panel_2d_area_m2','surface_m2','tilt_degrees','azimuth_degrees','confidence'];
+            for (const r of rows) {
+                if (!r.panel_id) continue;
+                for (const k of numCols) {
+                    if (r[k] === undefined) continue;
+                    if (r[k] === '' || r[k] === null) { r[k] = null; continue; }
+                    const n = Number(r[k]);
+                    r[k] = Number.isFinite(n) ? n : null;
+                }
+                props[r.panel_id] = r;
+            }
+            panelProps = props;
+            files.csv = { headers, rows };
+        }
+
+        function ingestPanels(fc) {
+            const isLambert = detectLambert(fc);
+            const reproj = isLambert ? lambert93ToWGS84 : (x, y) => [x, y];
+            const out = [];
+            for (const f of fc.features) {
+                const pid = f.properties?.panel_id;
+                if (!pid) continue;
+                const geom = reprojectGeom(f.geometry, reproj);
+                if (!geom) continue;
+                out.push({ panel_id: pid, geometry: geom });
+            }
+            panelGeoms = out;
+            files.panels = out;
+        }
+
+        function ingestTiles(fc) {
+            // tiles file is already WGS-84 from the generator; reproject only if hinted.
+            const isLambert = detectLambert(fc);
+            const reproj = isLambert ? lambert93ToWGS84 : (x, y) => [x, y];
+            const out = [];
+            for (const f of fc.features) {
+                const geom = reprojectGeom(f.geometry, reproj);
+                if (!geom) continue;
+                // Coerce string "true"/"false" if the file was hand-edited
+                const usedRaw = f.properties?.used;
+                const used = usedRaw === true || usedRaw === 'true' || usedRaw === 1 || usedRaw === '1';
+                out.push({
+                    type: 'Feature', geometry: geom,
+                    properties: { tile_id: f.properties?.tile_id || '', used }
+                });
+            }
+            lidarTiles = out;
+            files.tiles = out;
+        }
+
+        function ingestAdmin(fc) {
+            // Admin file is already WGS-84 in our pipeline; reproject only if explicit 2154 hint.
+            const isLambert = detectLambert(fc);
+            const reproj = isLambert ? lambert93ToWGS84 : (x, y) => [x, y];
+            const reprojected = [];
+            for (const f of fc.features) {
+                const geom = reprojectGeom(f.geometry, reproj);
+                if (!geom) continue;
+                reprojected.push({ type: 'Feature', geometry: geom, properties: f.properties || {} });
+            }
+            adminFC = { type: 'FeatureCollection', features: reprojected };
+            dept = reprojected.find(f => f.properties.kind === 'departement') || null;
+            commune = reprojected.filter(f => f.properties.kind === 'commune');
+            files.admin = adminFC;
+        }
+
+        function setPill(which, name, info) {
+            const labels = { panels: 'panels', csv: 'CSV', admin: 'admin' };
+            for (const id of [`dz-pill-${which}`, `pill-${which}`]) {
+                const el = document.getElementById(id);
+                if (!el) continue;
+                el.classList.remove('miss'); el.classList.add('ok');
+                el.textContent = `${labels[which]}: ${name}  (${info})`;
+            }
+        }
+
+        function renderAll() {
+            // --- Panels source ---
+            const features = [];
+            const buildings = new Set();
+            let totalSurface = 0;
+            for (const g of panelGeoms) {
+                const p = panelProps[g.panel_id];
+                const props = p ? { ...p, _color: colorForAzimuth(p.azimuth_degrees) }
+                                 : { panel_id: g.panel_id, _color: '#06b6d4' };
+                features.push({ type: 'Feature', geometry: g.geometry, properties: props });
+                if (p?.building_id) buildings.add(p.building_id);
+                if (Number.isFinite(p?.surface_m2)) totalSurface += p.surface_m2;
+            }
+            if (map?.getSource('panels')) map.getSource('panels').setData({ type: 'FeatureCollection', features });
+
+            // --- Compute commune LiDAR coverage (point-in-polygon over tilted panels) ---
+            // A panel "has LiDAR" when its tilt_degrees is set (i.e. stage 2b matched
+            // it to a roof region with a real plane). We project each such panel to a
+            // commune and count, then expose two props on each commune feature:
+            //   has_tilt:  true if ≥1 tilted panel falls inside
+            //   n_tilted:  exact count, used in the click popup
+            const tiltedPanels = Object.values(panelProps).filter(p => {
+                if (p.tilt_degrees === null || p.tilt_degrees === undefined) return false;
+                const t = Number(p.tilt_degrees);
+                return Number.isFinite(t);
+            }).map(p => [Number(p.lon), Number(p.lat)]);
+
+            const communeFeatures = commune.map(c => {
+                if (tiltedPanels.length === 0) {
+                    return { ...c, properties: { ...c.properties, has_tilt: false, n_tilted: 0 } };
+                }
+                const [minX, minY, maxX, maxY] = bboxOfGeom(c.geometry);
+                let n = 0;
+                for (const [lon, lat] of tiltedPanels) {
+                    if (lon < minX || lon > maxX || lat < minY || lat > maxY) continue;
+                    if (pointInPolygon(lon, lat, c.geometry)) n++;
+                }
+                return { ...c, properties: { ...c.properties, has_tilt: n > 0, n_tilted: n } };
+            });
+            const nCovered = communeFeatures.filter(f => f.properties.has_tilt).length;
+            console.info(`commune LiDAR coverage: ${nCovered} / ${communeFeatures.length} have ≥1 tilted panel`);
+
+            // --- Admin sources ---
+            if (map?.getSource('communes')) {
+                map.getSource('communes').setData({ type: 'FeatureCollection', features: communeFeatures });
+            }
+            if (map?.getSource('dept')) {
+                map.getSource('dept').setData({ type: 'FeatureCollection', features: dept ? [dept] : [] });
+            }
+            // --- LiDAR-HD tile coverage ---
+            if (map?.getSource('lidar-tiles')) {
+                map.getSource('lidar-tiles').setData({ type: 'FeatureCollection', features: lidarTiles });
+            }
+            // Cache the enriched features so click popups can read n_tilted later
+            commune = communeFeatures;
+
+            // --- Stats ---
+            const sample = features.find(f => f.properties.dept) || null;
+            document.getElementById('dept-pill').textContent = sample ? 'dept ' + sample.properties.dept : (dept ? 'dept ' + dept.properties.code : '--');
+            document.getElementById('stat-panels').textContent = features.length.toLocaleString();
+            document.getElementById('stat-buildings').textContent = buildings.size.toLocaleString();
+            document.getElementById('stat-surface').textContent = formatSurface(totalSurface);
+            document.getElementById('stat-communes').textContent = commune.length.toLocaleString();
+            document.getElementById('stat-communes-covered').textContent = nCovered.toLocaleString();
+
+            if (features.length > 0 || commune.length > 0) {
+                document.getElementById('drop-zone').classList.add('hidden');
+                document.getElementById('controls-panel').classList.remove('hidden');
+                setTimeout(() => fitToData(), 200);
+            }
+        }
+
+        function fitToData() {
+            if (!map) return;
+            let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+            const expand = (lon, lat) => {
+                if (lon < minLon) minLon = lon; if (lon > maxLon) maxLon = lon;
+                if (lat < minLat) minLat = lat; if (lat > maxLat) maxLat = lat;
+            };
+            // Prefer admin bounds if loaded (covers the whole dept)
+            if (dept) {
+                forEachLonLat(dept.geometry?.coordinates, expand);
+            } else {
+                for (const g of panelGeoms) forEachLonLat(g.geometry?.coordinates, expand);
+            }
+            if (Number.isFinite(minLon)) {
+                map.fitBounds([[minLon, minLat], [maxLon, maxLat]], { padding: 40, duration: 800 });
+            }
+        }
+
+        function clearAll() {
+            panelGeoms = []; panelProps = {};
+            adminFC = null; dept = null; commune = [];
+            lidarTiles = [];
+            files = { panels: null, csv: null, admin: null, tiles: null };
+            const empty = { type: 'FeatureCollection', features: [] };
+            for (const s of ['panels', 'panel-selected', 'communes', 'dept', 'lidar-tiles']) {
+                if (map?.getSource(s)) map.getSource(s).setData(empty);
+            }
+            for (const w of ['panels', 'csv', 'admin', 'tiles']) {
+                for (const id of [`dz-pill-${w}`, `pill-${w}`]) {
+                    const el = document.getElementById(id);
+                    if (!el) continue;
+                    el.classList.add('miss'); el.classList.remove('ok');
+                    el.textContent = `${w === 'csv' ? 'CSV' : w} —`;
+                }
+            }
+            ['stat-panels', 'stat-buildings', 'stat-communes'].forEach(id => document.getElementById(id).textContent = '0');
+            document.getElementById('stat-surface').textContent = '0 m²';
+            document.getElementById('dept-pill').textContent = '--';
+            document.getElementById('panel-details').classList.add('hidden');
+            document.getElementById('commune-card').classList.add('hidden');
+            document.getElementById('controls-panel').classList.add('hidden');
+            document.getElementById('drop-zone').classList.remove('hidden');
+        }
+
+        // --- Wire ---
+        document.getElementById('file-input').addEventListener('change', e => { if (e.target.files.length) handleFiles(e.target.files); });
+        const dropZone = document.getElementById('drop-zone');
+        dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+        dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('dragover'); if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+
+        document.getElementById('btn-fit').addEventListener('click', fitToData);
+        document.getElementById('btn-clear').addEventListener('click', clearAll);
+        document.getElementById('btn-close-panel').addEventListener('click', () => {
+            document.getElementById('panel-details').classList.add('hidden');
+            if (map?.getSource('panel-selected')) map.getSource('panel-selected').setData({ type: 'FeatureCollection', features: [] });
+        });
+        document.getElementById('btn-close-commune').addEventListener('click', () => {
+            document.getElementById('commune-card').classList.add('hidden');
+        });
+
+        document.getElementById('opacity-slider').addEventListener('input', e => {
+            const v = parseFloat(e.target.value);
+            document.getElementById('opacity-val').textContent = Math.round(v * 100) + '%';
+            if (map?.getLayer('panels-fill')) map.setPaintProperty('panels-fill', 'fill-opacity', v);
+        });
+        document.getElementById('basemap-select').addEventListener('change', e => setBasemap(e.target.value));
+
+        function setVis(layerId, on) {
+            if (map?.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', on ? 'visible' : 'none');
+        }
+        document.getElementById('panels-toggle').addEventListener('change', e => {
+            ['panels-fill', 'panels-line', 'panel-selected-line'].forEach(id => setVis(id, e.target.checked));
+        });
+        document.getElementById('communes-toggle').addEventListener('change', e => {
+            ['communes-fill', 'communes-line'].forEach(id => setVis(id, e.target.checked));
+        });
+        document.getElementById('dept-toggle').addEventListener('change', e => setVis('dept-line', e.target.checked));
+        document.getElementById('tiles-toggle').addEventListener('change', e => {
+            ['lidar-tiles-fill', 'lidar-tiles-line'].forEach(id => setVis(id, e.target.checked));
+        });
+
+        initMap();
+    </script>
+</body>
+</html>
