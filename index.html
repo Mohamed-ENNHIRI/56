@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dept 56 — PV panels + admin boundaries</title>
+    <title>Lidar_Loop · PV map presentation</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/proj4@2.9.2/dist/proj4.min.js"></script>
     <link href="https://unpkg.com/maplibre-gl@4.1.0/dist/maplibre-gl.css" rel="stylesheet" />
@@ -42,7 +42,7 @@
         <div class="flex items-center justify-between border-b border-slate-700 pb-3 mb-3">
             <div class="flex items-center gap-2">
                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#06b6d4" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg>
-                <h1 class="text-sm font-bold text-slate-100">Dept 56 — PV viewer</h1>
+                <h1 id="header-title" class="text-sm font-bold text-slate-100">PV viewer</h1>
             </div>
             <div id="dept-pill" class="text-xs text-cyan-300 font-mono bg-cyan-400/10 px-2 py-1 rounded">--</div>
         </div>
@@ -151,20 +151,49 @@
         <div class="text-xs text-cyan-300 mt-2" id="commune-panels">-- panels</div>
     </div>
 
+    <!-- Department selector (shown first; hidden once a dept is picked) -->
+    <div id="dept-picker" class="absolute inset-0 flex items-center justify-center bg-slate-900/97 z-[60] transition-opacity duration-300">
+        <div class="panel p-10 rounded-2xl shadow-2xl max-w-xl w-full text-center">
+            <div class="w-16 h-16 bg-slate-800 rounded-full flex items-center justify-center mb-6 mx-auto">
+                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#06b6d4" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+            </div>
+            <h1 class="text-2xl font-bold text-white mb-1">Lidar_Loop · PV map presentation</h1>
+            <p class="text-slate-400 text-sm mb-6">Select a department to load its detection results.</p>
+            <div id="dept-buttons" class="grid grid-cols-2 gap-3 mb-6">
+                <button data-dept="35" class="dept-btn group p-5 rounded-xl border border-slate-700 bg-slate-800/50 hover:bg-slate-700/70 hover:border-cyan-500 transition text-left">
+                    <div class="text-2xl font-bold text-cyan-300 mb-1">35</div>
+                    <div class="text-sm text-slate-200">Ille-et-Vilaine</div>
+                    <div class="text-xs text-slate-500 mt-2">12,591 panels · 87% with LiDAR plane</div>
+                </button>
+                <button data-dept="56" class="dept-btn group p-5 rounded-xl border border-slate-700 bg-slate-800/50 hover:bg-slate-700/70 hover:border-cyan-500 transition text-left">
+                    <div class="text-2xl font-bold text-cyan-300 mb-1">56</div>
+                    <div class="text-sm text-slate-200">Morbihan</div>
+                    <div class="text-xs text-slate-500 mt-2">10,882 panels · 12% with LiDAR plane</div>
+                </button>
+            </div>
+            <p class="text-slate-500 text-xs">
+                Each button loads <code class="text-slate-400">{dept}/panels_assigned__{dept}.geojson</code>,
+                <code class="text-slate-400">panels__{dept}.csv</code>, <code class="text-slate-400">admin_{dept}.geojson</code>,
+                and <code class="text-slate-400">lidar_tiles_{dept}.geojson</code>.
+                If the browser refuses (file://), the drop zone takes over.
+            </p>
+        </div>
+    </div>
+
     <!-- Drop zone -->
-    <div id="drop-zone" class="absolute inset-0 flex items-center justify-center bg-slate-900/95 z-50 transition-colors duration-300">
+    <div id="drop-zone" class="absolute inset-0 flex items-center justify-center bg-slate-900/95 z-50 transition-colors duration-300 hidden">
         <div class="panel p-10 rounded-2xl shadow-2xl flex flex-col items-center max-w-lg w-full text-center border-dashed border-2 border-slate-600 hover:border-cyan-500 transition-colors cursor-pointer">
             <div class="w-16 h-16 bg-slate-800 rounded-full flex items-center justify-center mb-6">
                 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#06b6d4" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             </div>
             <h2 class="text-xl font-bold text-white mb-2">Drop your four files</h2>
             <p class="text-slate-400 text-sm mb-2">
-                <code class="text-slate-200">panels_assigned__56.geojson</code> +
-                <code class="text-slate-200">panels__56.csv</code> +
-                <code class="text-slate-200">admin_56.geojson</code> +
-                <code class="text-slate-200">lidar_tiles_56.geojson</code>
+                <code class="text-slate-200"><span class="dz-dept">{dept}</span>/panels_assigned__<span class="dz-dept">{dept}</span>.geojson</code> +
+                <code class="text-slate-200">panels__<span class="dz-dept">{dept}</span>.csv</code> +
+                <code class="text-slate-200">admin_<span class="dz-dept">{dept}</span>.geojson</code> +
+                <code class="text-slate-200">lidar_tiles_<span class="dz-dept">{dept}</span>.geojson</code>
             </p>
-            <p class="text-slate-500 text-xs mb-5">All four sit in the same folder as this HTML. File type is auto-detected (panels, admin, tiles, or CSV).</p>
+            <p class="text-slate-500 text-xs mb-5">Auto-load could not reach the four files — drop them here. File type is auto-detected.</p>
             <div class="flex flex-wrap gap-2 mb-5 text-xs justify-center">
                 <span id="dz-pill-panels" class="file-pill miss">panels —</span>
                 <span id="dz-pill-csv"    class="file-pill miss">CSV —</span>
@@ -773,34 +802,52 @@
             ['lidar-tiles-fill', 'lidar-tiles-line'].forEach(id => setVis(id, e.target.checked));
         });
 
-        // --- Auto-load from same directory (works under http://, not under file://) ---
-        // Default filenames produced by the pipeline for dept 56. Edit if you ship
-        // this viewer to a different dept; the drop zone is still available as
-        // fallback when the browser blocks cross-file fetches.
-        const AUTO_LOAD = [
-            'panels_assigned__56.geojson',
-            'panels__56.csv',
-            'admin_56.geojson',
-            'lidar_tiles_56.geojson',
-        ];
+        // --- Department selector → auto-load ---
+        // Each dept has its own subfolder with the four pipeline outputs renamed
+        // to that dept. The selector calls tryAutoLoad(dept) which fetches from
+        // {dept}/*.{geojson,csv} relative to this page. URL ?dept=XX overrides
+        // the picker (deep-link friendly).
+        let CURRENT_DEPT = null;
 
-        async function tryAutoLoad() {
+        function filesForDept(d) {
+            return [
+                `${d}/panels_assigned__${d}.geojson`,
+                `${d}/panels__${d}.csv`,
+                `${d}/admin_${d}.geojson`,
+                `${d}/lidar_tiles_${d}.geojson`,
+            ];
+        }
+
+        async function tryAutoLoad(dept) {
+            CURRENT_DEPT = dept;
+            // Update the drop-zone copy + controls header to mention the chosen dept
+            document.querySelectorAll('.dz-dept').forEach(el => { el.textContent = dept; });
+            const hdr = document.getElementById('header-title');
+            if (hdr) hdr.textContent = `Dept ${dept} — PV viewer`;
+            document.title = `Dept ${dept} — Lidar_Loop PV map`;
+            // Hide picker
+            const picker = document.getElementById('dept-picker');
+            if (picker) picker.classList.add('hidden');
+
             const here = new URL('.', location.href);
             const overlay = document.getElementById('loading-overlay');
             const loading = document.getElementById('loading-text');
             overlay.classList.remove('hidden');
-            loading.textContent = 'Looking for files alongside this page...';
+            loading.textContent = `Looking for dept ${dept} files...`;
             const fetched = [];
-            for (const name of AUTO_LOAD) {
+            for (const rel of filesForDept(dept)) {
                 try {
-                    const r = await fetch(new URL(name, here), { cache: 'no-cache' });
+                    const r = await fetch(new URL(rel, here), { cache: 'no-cache' });
                     if (!r.ok) throw new Error(`HTTP ${r.status}`);
                     const blob = await r.blob();
-                    fetched.push(new File([blob], name, { type: blob.type || 'application/json' }));
-                    loading.textContent = `Auto-loaded ${name}...`;
+                    const filename = rel.split('/').pop();
+                    fetched.push(new File([blob], filename, { type: blob.type || 'application/json' }));
+                    loading.textContent = `Auto-loaded ${filename}...`;
                 } catch (e) {
-                    console.info(`auto-load: skipped ${name} (${e.message}). Under file:// browsers block this for security; use http or drag the files in.`);
+                    console.info(`auto-load: skipped ${rel} (${e.message}). Under file:// browsers block this; use http or drop the files in.`);
                     overlay.classList.add('hidden');
+                    // Reveal the drop zone fallback
+                    document.getElementById('drop-zone').classList.remove('hidden');
                     return false;
                 }
             }
@@ -809,17 +856,34 @@
             return true;
         }
 
-        // Wait for the map to be ready, then attempt auto-load
-        function waitForMap() {
+        // Wait for the map sources to exist, then either auto-pick (?dept=XX)
+        // or wait for the user to click a dept button.
+        function waitForMapReady(cb) {
             if (map && map.isStyleLoaded && map.isStyleLoaded() && map.getSource('panels')) {
-                tryAutoLoad();
+                cb();
             } else {
-                setTimeout(waitForMap, 100);
+                setTimeout(() => waitForMapReady(cb), 100);
+            }
+        }
+
+        function setupDeptPicker() {
+            const buttons = document.querySelectorAll('#dept-buttons .dept-btn');
+            buttons.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const dept = btn.dataset.dept;
+                    waitForMapReady(() => tryAutoLoad(dept));
+                });
+            });
+            // Optional: ?dept=XX deep-link auto-pick
+            const params = new URLSearchParams(location.search);
+            const preset = params.get('dept');
+            if (preset) {
+                waitForMapReady(() => tryAutoLoad(preset));
             }
         }
 
         initMap();
-        waitForMap();
+        setupDeptPicker();
     </script>
 </body>
 </html>
