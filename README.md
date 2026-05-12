@@ -1,4 +1,4 @@
-# Rooftop PV detection — Brittany pilot
+# Rooftop PV detection 
 
 Web presentation of detected rooftop photovoltaic panels for two Brittany
 départements, derived from aerial imagery and LiDAR.
